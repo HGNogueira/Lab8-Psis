@@ -10,8 +10,17 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <ctype.h>
+#include <pthread.h>
+#include "messages.h"
 
-#include "storyserver.h"
+#define S_PORT 3001
+
+
+struct pthread_node{
+	pthread_t thread_id;
+	int scl;
+	struct pthread_node *next;
+};
 
 int run = 1;
 
@@ -26,7 +35,31 @@ void convert_toupper(char *string){
 		i++;
 	}
 }
-	
+
+void *c_interact(void *thread_scl){
+	int scl = (int) *((int *) thread_scl);
+	int err;
+	message smsg;
+	message rmsg;
+
+	while(1){
+		if( (err = recv(scl, &rmsg, sizeof(message), 0)) == -1){
+			perror("recv error");
+			pthread_exit(EXIT_FAILURE);
+		}
+		else if(err == 0){ //client disconnected
+			printf("Client disconnected from this server\n");
+			close(scl);
+			/* tell the gateway that we have lost 1 client */
+			return(NULL);
+		}
+		printf("New receive\n");
+		strcpy( smsg.buffer, rmsg.buffer);
+		convert_toupper(smsg.buffer);
+		printf("Turned %s into %s\n", rmsg.buffer, smsg.buffer);
+		send(scl, &smsg, sizeof(smsg), 0);
+	}
+}
 
 int main(){
 	int s, scl, s_gw, err;
@@ -35,12 +68,11 @@ int main(){
 	struct sockaddr_in clt_addr;
 	struct sockaddr_in gw_addr;
 	socklen_t clt_addr_len;
-	message smsg;
-	message rmsg;
 	message_gw gw_msg;
 	char fread_buff[50];
 	int port;
 	struct sigaction act_INT, act_SOCK;
+	struct pthread_node *thread_list, *thread_head;  //lista de threads
 
 /****** SIGNAL MANAGEMENT ******/
 	act_INT.sa_handler = sigint_handler;
@@ -60,7 +92,7 @@ int main(){
 		exit(EXIT_FAILURE);
 	}
 	srv_addr.sin_family = AF_INET;
-	srv_addr.sin_port = htons(SRV1_PORT + getpid());
+	srv_addr.sin_port = htons(S_PORT + getpid());
 	srv_addr.sin_addr.s_addr = INADDR_ANY;
 	
 	if(  (err = bind(s, (const struct sockaddr *) &srv_addr, sizeof(struct sockaddr_in)))== -1){
@@ -93,7 +125,7 @@ int main(){
 	fclose(f);
 	
 	gw_msg.type = 1;
-	gw_msg.port = SRV1_PORT + getpid();
+	gw_msg.port = S_PORT + getpid();
 	
 	if( (s_gw=socket(AF_INET, SOCK_DGRAM, 0)) == -1){
 		perror("socket error");
@@ -108,34 +140,23 @@ int main(){
 
 /****** READY TO RECEIVE MULTIPLE CONNECTIONS ******/
 	clt_addr_len = sizeof(struct sockaddr_in);
-	if( (scl = accept(s, (struct sockaddr *) &clt_addr, &clt_addr_len)) == -1){
-		perror("accept");
-		exit(EXIT_FAILURE);
-	}
+	thread_list = (struct pthread_node *) malloc(sizeof(struct pthread_node));
+	thread_head = thread_list;
 	while(run){
-		while(run){ // para com SIGINT ou SIGPIPE (falha na socket)
-			if( recv(scl, &rmsg, sizeof(message), 0) == -1){
-				perror("recv error");
-				close(s);
-				exit(EXIT_FAILURE);
-			}
-			if(rmsg.buffer[0]== 'A'){//condição de fim de interação (por mudar)
-				printf("Ending interaction\n");
-				close(scl);
-				close(s);
-				exit(EXIT_SUCCESS);
-			}
-			printf("New receive from %s\n",inet_ntoa(clt_addr.sin_addr));
-			strcpy( smsg.buffer, rmsg.buffer);
-			convert_toupper(smsg.buffer);
-			printf("Turned %s into %s\n", rmsg.buffer, smsg.buffer);
-			send(scl, &smsg, sizeof(smsg), 0);
-			}
+		if( (thread_list->scl = accept(s, (struct sockaddr *) &clt_addr, &clt_addr_len)) != -1){
+			if( pthread_create(&(thread_list->thread_id) , NULL, c_interact, &(thread_list->scl)) != 0)
+				printf("Error creating a new thread\n");
+			thread_list->next = (struct pthread_node *) malloc(sizeof(struct pthread_node));
+			thread_list = thread_list->next;
+		} else{
+			perror("accept");
+			//exit(EXIT_FAILURE):  //não sair para não interromper restantes threads?
+
+		}
 	}
 	
-	printf("Closing socket\n");
+	/* close thread_list */
+	
 	close(s);
-	close(scl);
-
 	exit(EXIT_SUCCESS);
 }
