@@ -6,7 +6,7 @@
 
 typedef struct message_gw{
     int  type;
-    char address[20];
+    char address[50];
     int  port;
 } message_gw;
 
