@@ -22,7 +22,9 @@ struct pthread_node{
 	struct pthread_node *next;
 };
 
-int run = 1;
+int run = 1, s_gw; //s_gw socket que comunica com gateway (partilhada entre threads)
+struct sockaddr_in gw_addr;
+message_gw gw_msg;
 
 void sigint_handler(int n){
 	run = 0;
@@ -45,10 +47,14 @@ void *c_interact(void *thread_scl){
 	while(1){
 		if( (err = recv(scl, &rmsg, sizeof(message), 0)) == -1){
 			perror("recv error");
-			pthread_exit(EXIT_FAILURE);
+			pthread_exit(NULL);
 		}
 		else if(err == 0){ //client disconnected
 			printf("Client disconnected from this server\n");
+			gw_msg.type = 3; //decrementar numero de clientes
+			if( (sendto(s_gw, &gw_msg, sizeof(gw_msg), 0,(const struct sockaddr *) &gw_addr, sizeof(gw_addr)) )==-1){
+				perror("GW contact");
+			}
 			close(scl);
 			/* tell the gateway that we have lost 1 client */
 			return(NULL);
@@ -62,13 +68,11 @@ void *c_interact(void *thread_scl){
 }
 
 int main(){
-	int s, scl, s_gw, err;
+	int s, scl, err;
 	FILE *f;
 	struct sockaddr_in srv_addr;
 	struct sockaddr_in clt_addr;
-	struct sockaddr_in gw_addr;
 	socklen_t clt_addr_len;
-	message_gw gw_msg;
 	char fread_buff[50];
 	int port;
 	struct sigaction act_INT, act_SOCK;
@@ -85,6 +89,7 @@ int main(){
 	act_SOCK.sa_flags=0;
 	sigaction(SIGPIPE, &act_SOCK, NULL); //Quando cliente fecha scl, podemos controlar comportamento do servidor
 /****** SIGNAL MANAGEMENT ******/
+
 
 /****** PREPARE SOCK_STREAM ******/
 	if(  (s = socket(AF_INET, SOCK_STREAM, 0))==-1 ){
@@ -126,6 +131,7 @@ int main(){
 	
 	gw_msg.type = 1;
 	gw_msg.port = S_PORT + getpid();
+	printf("My port is %d\n", gw_msg.port);
 	
 	if( (s_gw=socket(AF_INET, SOCK_DGRAM, 0)) == -1){
 		perror("socket error");
@@ -144,8 +150,13 @@ int main(){
 	thread_head = thread_list;
 	while(run){
 		if( (thread_list->scl = accept(s, (struct sockaddr *) &clt_addr, &clt_addr_len)) != -1){
+			gw_msg.type = 2; //incremento no número de clientes
+			if( (sendto(s_gw, &gw_msg, sizeof(gw_msg), 0,(const struct sockaddr *) &gw_addr, sizeof(gw_addr)) )==-1){
+				perror("GW contact");
+			}
 			if( pthread_create(&(thread_list->thread_id) , NULL, c_interact, &(thread_list->scl)) != 0)
 				printf("Error creating a new thread\n");
+
 			thread_list->next = (struct pthread_node *) malloc(sizeof(struct pthread_node));
 			thread_list = thread_list->next;
 		} else{
